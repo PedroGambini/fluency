@@ -12,6 +12,8 @@ import {
   createSpeechRecognition,
   speak,
   stopSpeaking,
+  requestMicPermission,
+  MicPermission,
 } from '@/lib/speech';
 import {
   playMessageSent,
@@ -26,7 +28,7 @@ import ScenarioStartModal from '@/components/ScenarioStartModal';
 import ChatBubble from '@/components/ChatBubble';
 import LevelUpOverlay from '@/components/LevelUpOverlay';
 import SummaryModal from '@/components/SummaryModal';
-import { Mic, MicOff, Send, X } from 'lucide-react';
+import { Mic, Send, X, Volume2, VolumeX } from 'lucide-react';
 
 const MAX_MESSAGES = 30;
 
@@ -34,18 +36,9 @@ export default function PracticePage() {
   const router = useRouter();
   const store = useStore();
   const {
-    user,
-    currentSession,
-    setScenario,
-    addMessage,
-    addWords,
-    markUsedPortuguese,
-    levelUpPending,
-    clearLevelUp,
-    resetSession,
-    endSession,
-    unlockAchievement,
-    achievements,
+    user, currentSession, setScenario, addMessage, addWords,
+    markUsedPortuguese, levelUpPending, clearLevelUp,
+    resetSession, endSession, unlockAchievement, achievements,
   } = store;
 
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
@@ -55,33 +48,48 @@ export default function PracticePage() {
   const [playingIndex, setPlayingIndex] = useState<number | null>(null);
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [showSummary, setShowSummary] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [micPermission, setMicPermission] = useState<MicPermission>('unknown');
+  const [showMicPrompt, setShowMicPrompt] = useState(false);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentTranscriptRef = useRef('');
   const introSentRef = useRef(false);
+  const mutedRef = useRef(false);
 
   const speechSupported = isSpeechRecognitionSupported();
   const ttsSupported = isSpeechSynthesisSupported();
 
-  // Redirect if no user
-  useEffect(() => {
-    if (!user) router.replace('/');
-  }, [user, router]);
+  // Keep mutedRef in sync so callbacks always see latest value
+  useEffect(() => { mutedRef.current = muted; }, [muted]);
 
-  // Fix bug: if session was ended and user navigates back, reset to scenario grid
+  useEffect(() => { if (!user) router.replace('/'); }, [user, router]);
+
+  // Reset to scenario grid if session was ended before navigating away
   useEffect(() => {
-    if (currentSession.sessionEnded) {
-      resetSession();
-    }
+    if (currentSession.sessionEnded) resetSession();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Check existing mic permission on mount (no prompt yet)
+  useEffect(() => {
+    if (!speechSupported) { setMicPermission('unsupported'); return; }
+    navigator.permissions?.query({ name: 'microphone' as PermissionName })
+      .then(result => {
+        if (result.state === 'granted') setMicPermission('granted');
+        else if (result.state === 'denied') setMicPermission('denied');
+      })
+      .catch(() => {}); // browser may not support permissions API
+  }, [speechSupported]);
 
   // Timer
   useEffect(() => {
     if (!currentSession.scenarioId || currentSession.sessionEnded) return;
-    timerRef.current = setInterval(() => setSessionSeconds((s) => s + 1), 1000);
+    timerRef.current = setInterval(() => setSessionSeconds(s => s + 1), 1000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [currentSession.scenarioId, currentSession.sessionEnded]);
 
@@ -91,23 +99,25 @@ export default function PracticePage() {
   }, [currentSession.messages, loading]);
 
   // Level up sound
-  useEffect(() => {
-    if (levelUpPending) playLevelUp();
-  }, [levelUpPending]);
+  useEffect(() => { if (levelUpPending) playLevelUp(); }, [levelUpPending]);
 
-  // Send AI intro when scenario starts
+  const autoSpeak = useCallback((text: string, index: number, onEnd?: () => void) => {
+    if (!ttsSupported || mutedRef.current) return;
+    setPlayingIndex(index);
+    speak(text, () => { setPlayingIndex(null); onEnd?.(); });
+  }, [ttsSupported]);
+
+  // AI intro when scenario starts
   const sendIntro = useCallback(async () => {
     if (!user || introSentRef.current) return;
     introSentRef.current = true;
     setLoading(true);
-
-    const introPrompt = buildIntroPrompt(store);
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          systemPrompt: introPrompt,
+          systemPrompt: buildIntroPrompt(store),
           messages: [{ role: 'user', content: 'start' }],
         }),
       });
@@ -115,13 +125,15 @@ export default function PracticePage() {
       const { reply } = parseAIResponse(data.text ?? '');
       addMessage({ role: 'assistant', content: reply });
       playMessageReceived();
+      // index 0 — intro is always the first message
+      autoSpeak(reply, 0);
     } catch {
       addMessage({ role: 'assistant', content: '(Erro ao conectar. Tente novamente.)' });
     } finally {
       setLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, store]);
+  }, [user, store, autoSpeak]);
 
   useEffect(() => {
     if (currentSession.scenarioId && currentSession.messages.length === 0) {
@@ -146,14 +158,14 @@ export default function PracticePage() {
     setLoading(true);
     playMessageSent();
 
-    const systemPrompt = buildSystemPrompt(store);
-    const messages = [...currentSession.messages, userMsg];
-
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ systemPrompt, messages }),
+        body: JSON.stringify({
+          systemPrompt: buildSystemPrompt(store),
+          messages: [...currentSession.messages, userMsg],
+        }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -162,6 +174,10 @@ export default function PracticePage() {
       addMessage({ role: 'assistant', content: reply });
       playMessageReceived();
 
+      // auto-speak: index = messages.length after adding (user + assistant = +2)
+      const replyIndex = currentSession.messages.length + 1;
+      autoSpeak(reply, replyIndex);
+
       if (meta.newWords?.length > 0) addWords(meta.newWords);
       if (meta.usedPortuguese) markUsedPortuguese();
     } catch {
@@ -169,40 +185,64 @@ export default function PracticePage() {
     } finally {
       setLoading(false);
     }
-  }, [user, loading, currentSession, addMessage, addWords, markUsedPortuguese, store]);
+  }, [user, loading, currentSession, addMessage, addWords, markUsedPortuguese, store, autoSpeak]);
 
   function handleSend() { sendMessage(input); }
-
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
-  function handleMic() {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-      return;
+  function stopListening(sendTranscript = false) {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    recognitionRef.current?.stop();
+    setIsListening(false);
+    if (sendTranscript && currentTranscriptRef.current.trim()) {
+      sendMessage(currentTranscriptRef.current.trim());
+      setInput('');
+      currentTranscriptRef.current = '';
     }
+  }
+
+  async function handleMic() {
+    if (isListening) { stopListening(false); setInput(''); currentTranscriptRef.current = ''; return; }
     if (!speechSupported) return;
+
+    // Request permission if not yet granted
+    if (micPermission !== 'granted') {
+      setShowMicPrompt(true);
+      const result = await requestMicPermission();
+      setMicPermission(result);
+      setShowMicPrompt(false);
+      if (result !== 'granted') return;
+    }
+
+    stopSpeaking();
+    setPlayingIndex(null);
+    currentTranscriptRef.current = '';
+
     recognitionRef.current = createSpeechRecognition(
-      (transcript, isFinal) => {
+      (transcript) => {
+        currentTranscriptRef.current = transcript;
         setInput(transcript);
-        if (isFinal) setIsListening(false);
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = setTimeout(() => stopListening(true), 4000);
       },
-      () => setIsListening(false)
+      () => { setIsListening(false); if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current); }
     );
     recognitionRef.current?.start();
     setIsListening(true);
   }
 
   function handlePlayAudio(content: string, index: number) {
-    if (playingIndex === index) {
-      stopSpeaking();
-      setPlayingIndex(null);
-      return;
-    }
+    if (playingIndex === index) { stopSpeaking(); setPlayingIndex(null); return; }
     setPlayingIndex(index);
     speak(content, () => setPlayingIndex(null));
+  }
+
+  function handleMuteToggle() {
+    const next = !muted;
+    setMuted(next);
+    if (next) stopSpeaking();
   }
 
   function handleEnd() {
@@ -220,10 +260,6 @@ export default function PracticePage() {
     resetSession();
   }
 
-  function handleSelectScenario(id: string) {
-    setSelectedScenarioId(id);
-  }
-
   function handleStartScenario(difficulty: CEFRLevel) {
     if (!selectedScenarioId) return;
     setSelectedScenarioId(null);
@@ -233,19 +269,13 @@ export default function PracticePage() {
     playScenarioStart();
   }
 
-  function handleAchievementUnlock(id: string) {
-    unlockAchievement(id);
-    playAchievement();
-  }
+  function handleAchievementUnlock(id: string) { unlockAchievement(id); playAchievement(); }
 
   if (!user) return null;
 
-  // Scenario selection view
+  // ── Scenario selection ──────────────────────────────────────────────────────
   if (!currentSession.scenarioId) {
-    const pendingScenario = selectedScenarioId
-      ? SCENARIOS.find(s => s.id === selectedScenarioId)
-      : null;
-
+    const pendingScenario = selectedScenarioId ? SCENARIOS.find(s => s.id === selectedScenarioId) : null;
     return (
       <div className="h-full flex flex-col bg-white relative">
         <div className="px-5 pt-6 pb-3">
@@ -254,16 +284,11 @@ export default function PracticePage() {
         </div>
         <div className="flex-1 overflow-y-auto px-4 pb-4">
           <div className="grid grid-cols-2 gap-3">
-            {SCENARIOS.map((s) => (
-              <ScenarioCard
-                key={s.id}
-                scenario={s}
-                onSelect={() => handleSelectScenario(s.id)}
-              />
+            {SCENARIOS.map(s => (
+              <ScenarioCard key={s.id} scenario={s} onSelect={() => setSelectedScenarioId(s.id)} />
             ))}
           </div>
         </div>
-
         {pendingScenario && (
           <ScenarioStartModal
             scenario={pendingScenario}
@@ -276,24 +301,38 @@ export default function PracticePage() {
     );
   }
 
+  // ── Active chat ─────────────────────────────────────────────────────────────
   const scenario = SCENARIOS.find(s => s.id === currentSession.scenarioId)!;
   const atLimit = currentSession.messageCount >= MAX_MESSAGES;
 
   return (
     <div className="h-full flex flex-col bg-white relative">
-      {/* Header — always visible */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 bg-white shrink-0 z-10">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 bg-white shrink-0 z-10">
         <span className="text-xl">{scenario.icon}</span>
         <div className="flex-1 min-w-0">
           <p className="font-bold text-gray-800 text-sm truncate">{scenario.name}</p>
-          <p className="text-xs text-gray-400">
-            {formatTimer(sessionSeconds)} · {currentSession.chosenDifficulty}
-          </p>
+          <p className="text-xs text-gray-400">{formatTimer(sessionSeconds)} · {currentSession.chosenDifficulty}</p>
         </div>
+
+        {/* Mute button */}
+        {ttsSupported && (
+          <button
+            onClick={handleMuteToggle}
+            className={`p-2 rounded-full transition-colors ${
+              muted ? 'bg-gray-100 text-gray-400' : 'bg-green-50 text-[#58CC02]'
+            }`}
+            aria-label={muted ? 'Ativar som' : 'Silenciar'}
+            title={muted ? 'Ativar som' : 'Silenciar'}
+          >
+            {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+          </button>
+        )}
+
+        {/* End button */}
         <button
           onClick={handleEnd}
           className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-red-50 text-red-500 hover:bg-red-100 transition-colors text-xs font-bold shrink-0"
-          aria-label="Encerrar conversa"
         >
           <X size={13} />
           Encerrar
@@ -307,11 +346,7 @@ export default function PracticePage() {
             key={i}
             role={msg.role}
             content={msg.content}
-            onPlayAudio={
-              msg.role === 'assistant' && ttsSupported
-                ? () => handlePlayAudio(msg.content, i)
-                : undefined
-            }
+            onPlayAudio={msg.role === 'assistant' && ttsSupported ? () => handlePlayAudio(msg.content, i) : undefined}
             isPlaying={playingIndex === i}
           />
         ))}
@@ -334,30 +369,76 @@ export default function PracticePage() {
             </p>
           </div>
         )}
-
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
+      {/* Mic permission prompt overlay */}
+      {showMicPrompt && (
+        <div className="absolute inset-0 z-30 bg-black/50 flex items-center justify-center px-6">
+          <div className="bg-white rounded-3xl p-6 text-center space-y-3 shadow-2xl">
+            <div className="text-4xl">🎤</div>
+            <p className="font-extrabold text-gray-800">Permitir microfone</p>
+            <p className="text-sm text-gray-500">
+              O browser vai pedir permissão para usar seu microfone.<br />
+              Clique em <strong>Permitir</strong> para ativar a entrada por voz.
+            </p>
+            <div className="flex gap-2 items-center justify-center text-xs text-gray-400">
+              <div className="w-2 h-2 bg-[#58CC02] rounded-full animate-pulse" />
+              Aguardando resposta...
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mic denied banner */}
+      {micPermission === 'denied' && (
+        <div className="mx-3 mb-1 px-4 py-2 bg-red-50 rounded-2xl flex items-center gap-2">
+          <span className="text-sm">🚫</span>
+          <p className="text-xs text-red-600 font-medium">
+            Microfone bloqueado. Ative nas configurações do navegador para usar a voz.
+          </p>
+        </div>
+      )}
+
+      {/* Listening overlay */}
+      {isListening && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 z-20">
+          <div className="bg-white rounded-3xl px-10 py-8 flex flex-col items-center gap-4 shadow-2xl mx-6">
+            <div className="relative flex items-center justify-center">
+              <div className="absolute w-24 h-24 rounded-full bg-red-100 animate-ping opacity-60" />
+              <div className="w-20 h-20 rounded-full bg-red-500 flex items-center justify-center shadow-lg">
+                <Mic size={36} className="text-white" />
+              </div>
+            </div>
+            <p className="text-gray-800 font-bold text-base">Estou te ouvindo...</p>
+            {input && <p className="text-gray-500 text-sm text-center italic">&ldquo;{input}&rdquo;</p>}
+            <p className="text-gray-400 text-xs text-center">Fale em inglês · Para após 4s de silêncio</p>
+            <button
+              onClick={() => stopListening(false)}
+              className="px-5 py-2 rounded-full bg-gray-100 text-gray-500 text-sm hover:bg-gray-200 transition-colors"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Input bar */}
       <div className="px-3 py-3 border-t border-gray-100 bg-white shrink-0">
         <div className="flex items-end gap-2">
-          {speechSupported && (
+          {speechSupported && micPermission !== 'denied' && (
             <button
               onClick={handleMic}
               disabled={atLimit || loading}
-              className={`p-3 rounded-2xl flex-shrink-0 transition-all ${
-                isListening
-                  ? 'bg-red-500 text-white animate-pulse'
-                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-              } disabled:opacity-40`}
-              aria-label={isListening ? 'Parar gravação' : 'Gravar voz'}
+              className="p-3 rounded-2xl flex-shrink-0 bg-gray-100 text-gray-500 hover:bg-gray-200 disabled:opacity-40 transition-all"
+              aria-label="Gravar voz"
             >
-              {isListening ? <MicOff size={18} /> : <Mic size={18} />}
+              <Mic size={18} />
             </button>
           )}
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={loading || atLimit}
             placeholder={atLimit ? 'Limite atingido' : 'Digite em inglês...'}
@@ -369,17 +450,13 @@ export default function PracticePage() {
             onClick={handleSend}
             disabled={!input.trim() || loading || atLimit}
             className="p-3 rounded-2xl bg-[#58CC02] text-white hover:bg-[#4caf00] disabled:opacity-40 disabled:cursor-not-allowed transition-all flex-shrink-0"
-            aria-label="Enviar mensagem"
           >
             <Send size={18} />
           </button>
         </div>
       </div>
 
-      {/* Overlays */}
-      {levelUpPending && (
-        <LevelUpOverlay newLevel={levelUpPending} onDismiss={clearLevelUp} />
-      )}
+      {levelUpPending && <LevelUpOverlay newLevel={levelUpPending} onDismiss={clearLevelUp} />}
       {showSummary && (
         <SummaryModal
           sessionSeconds={sessionSeconds}

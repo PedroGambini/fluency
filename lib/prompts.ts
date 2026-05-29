@@ -101,9 +101,20 @@ export function parseAIResponse(raw: string): { reply: string; meta: AIMeta } {
   const replyMatch = raw.match(/\[RESPOSTA\]([\s\S]*?)\[\/RESPOSTA\]/);
   const metaMatch = raw.match(/\[META\]([\s\S]*?)\[\/META\]/);
 
-  const reply = replyMatch?.[1]?.trim() ?? raw;
-  let meta: AIMeta = { newWords: [], quality: 50, usedPortuguese: false, correctedErrors: [] };
+  let reply: string;
+  if (replyMatch) {
+    reply = replyMatch[1].trim();
+  } else {
+    // AI omitted opening tag — strip all tag artifacts from raw text
+    reply = raw
+      .replace(/\[META\][\s\S]*?\[\/META\]/g, '')
+      .replace(/\[META\][\s\S]*/g, '')
+      .replace(/\[\/RESPOSTA\]/g, '')
+      .replace(/\[RESPOSTA\]/g, '')
+      .trim();
+  }
 
+  let meta: AIMeta = { newWords: [], quality: 50, usedPortuguese: false, correctedErrors: [] };
   try {
     if (metaMatch) {
       meta = { ...meta, ...JSON.parse(metaMatch[1].trim()) };

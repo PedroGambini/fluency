@@ -9,6 +9,19 @@ export function isSpeechSynthesisSupported(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
+export type MicPermission = 'unknown' | 'granted' | 'denied' | 'unsupported';
+
+export async function requestMicPermission(): Promise<MicPermission> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices) return 'unsupported';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach(t => t.stop());
+    return 'granted';
+  } catch {
+    return 'denied';
+  }
+}
+
 export type RecognitionCallback = (transcript: string, isFinal: boolean) => void;
 
 export function createSpeechRecognition(onResult: RecognitionCallback, onEnd: () => void) {
@@ -22,7 +35,7 @@ export function createSpeechRecognition(onResult: RecognitionCallback, onEnd: ()
   const recognition: any = new SpeechRecognitionAPI();
   recognition.lang = 'en-US';
   recognition.interimResults = true;
-  recognition.continuous = false;
+  recognition.continuous = true;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   recognition.onresult = (e: any) => {
