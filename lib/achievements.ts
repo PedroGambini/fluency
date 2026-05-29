@@ -88,6 +88,20 @@ export const ACHIEVEMENTS: Achievement[] = [
     check: (s) =>
       Object.values(s.vocabulary).filter((w) => w.count >= 5).length >= 10,
   },
+  {
+    id: 'five_conversations',
+    name: 'Conversador',
+    icon: '🗣️',
+    description: 'Completou 5 conversas',
+    check: (s) => s.stats.conversationsCompleted >= 5,
+  },
+  {
+    id: 'all_scenarios',
+    name: 'Sem Fronteiras',
+    icon: '🌎',
+    description: 'Experimentou todos os 10 cenários',
+    check: (s) => s.currentSession.scenariosVisited.length >= 10,
+  },
 ];
 
 export function checkAllAchievements(

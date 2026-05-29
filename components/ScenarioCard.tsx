@@ -1,5 +1,4 @@
 import { Scenario } from '@/lib/scenarios';
-import LevelBadge from './LevelBadge';
 
 interface ScenarioCardProps {
   scenario: Scenario;
@@ -15,7 +14,6 @@ export default function ScenarioCard({ scenario, onSelect }: ScenarioCardProps) 
     >
       <span className="text-3xl">{scenario.icon}</span>
       <span className="font-semibold text-gray-800 text-sm leading-tight">{scenario.name}</span>
-      <LevelBadge level={scenario.suggestedLevel} size="sm" />
     </button>
   );
 }

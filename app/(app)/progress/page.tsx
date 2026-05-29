@@ -89,7 +89,15 @@ export default function ProgressPage() {
 
       {/* Vocabulary */}
       <div className="mx-4 bg-white rounded-3xl p-4 shadow-sm mb-4">
-        <h3 className="font-bold text-gray-800 mb-3">Vocabulário</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-gray-800">Vocabulário</h3>
+          <button
+            onClick={() => router.push('/vocabulary')}
+            className="text-xs font-bold text-[#58CC02] hover:underline"
+          >
+            Ver tudo →
+          </button>
+        </div>
 
         <input
           type="text"
