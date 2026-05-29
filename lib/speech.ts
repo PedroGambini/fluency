@@ -23,8 +23,13 @@ export async function requestMicPermission(): Promise<MicPermission> {
 }
 
 export type RecognitionCallback = (transcript: string, isFinal: boolean) => void;
+export type RecognitionErrorCallback = (error: string) => void;
 
-export function createSpeechRecognition(onResult: RecognitionCallback, onEnd: () => void) {
+export function createSpeechRecognition(
+  onResult: RecognitionCallback,
+  onEnd: () => void,
+  onError?: RecognitionErrorCallback
+) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const w = window as any;
   const SpeechRecognitionAPI = w.SpeechRecognition || w.webkitSpeechRecognition;
@@ -35,13 +40,24 @@ export function createSpeechRecognition(onResult: RecognitionCallback, onEnd: ()
   const recognition: any = new SpeechRecognitionAPI();
   recognition.lang = 'en-US';
   recognition.interimResults = true;
-  recognition.continuous = true;
+  recognition.continuous = false; // one phrase at a time — most reliable across browsers
+  recognition.maxAlternatives = 1;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   recognition.onresult = (e: any) => {
-    const result = e.results[e.results.length - 1];
-    const transcript = result[0].transcript;
-    onResult(transcript, result.isFinal);
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const transcript = e.results[i][0].transcript;
+      const isFinal = e.results[i].isFinal;
+      onResult(transcript, isFinal);
+    }
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  recognition.onerror = (e: any) => {
+    const msg = e.error ?? 'unknown';
+    // 'no-speech' is benign — user just didn't speak, restart silently
+    if (msg !== 'no-speech') onError?.(msg);
+    onEnd();
   };
 
   recognition.onend = onEnd;

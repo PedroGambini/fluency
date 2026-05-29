@@ -51,6 +51,7 @@ export default function PracticePage() {
   const [muted, setMuted] = useState(false);
   const [micPermission, setMicPermission] = useState<MicPermission>('unknown');
   const [showMicPrompt, setShowMicPrompt] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
@@ -60,12 +61,13 @@ export default function PracticePage() {
   const currentTranscriptRef = useRef('');
   const introSentRef = useRef(false);
   const mutedRef = useRef(false);
+  const isListeningRef = useRef(false);
 
   const speechSupported = isSpeechRecognitionSupported();
   const ttsSupported = isSpeechSynthesisSupported();
 
-  // Keep mutedRef in sync so callbacks always see latest value
   useEffect(() => { mutedRef.current = muted; }, [muted]);
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
   useEffect(() => { if (!user) router.replace('/'); }, [user, router]);
 
@@ -193,17 +195,51 @@ export default function PracticePage() {
   }
 
   function stopListening() {
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    recognitionRef.current?.stop();
+    isListeningRef.current = false;
     setIsListening(false);
+    setMicError(null);
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+  }
+
+  function startRecognition() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rec: any = createSpeechRecognition(
+      (transcript, isFinal) => {
+        setMicError(null);
+        currentTranscriptRef.current = transcript;
+        setInput(transcript);
+        if (isFinal && transcript.trim()) {
+          // Send immediately on final, then restart recognition
+          const text = transcript.trim();
+          setInput('');
+          currentTranscriptRef.current = '';
+          sendMessage(text);
+          // Restart if still in listening mode
+          if (isListeningRef.current) {
+            setTimeout(() => { if (isListeningRef.current) startRecognition(); }, 300);
+          }
+        }
+      },
+      () => {
+        // onEnd — restart automatically while user hasn't toggled off
+        if (isListeningRef.current) {
+          setTimeout(() => { if (isListeningRef.current) startRecognition(); }, 200);
+        }
+      },
+      (error) => {
+        setMicError(error);
+        stopListening();
+      }
+    );
+    if (!rec) return;
+    recognitionRef.current = rec;
+    try { rec.start(); } catch { /* already started */ }
   }
 
   async function handleMic() {
-    // Toggle off
     if (isListening) { stopListening(); return; }
     if (!speechSupported) return;
 
-    // Request permission if not yet granted
     if (micPermission !== 'granted') {
       setShowMicPrompt(true);
       const result = await requestMicPermission();
@@ -215,24 +251,11 @@ export default function PracticePage() {
     stopSpeaking();
     setPlayingIndex(null);
     setInput('');
+    setMicError(null);
     currentTranscriptRef.current = '';
-
-    recognitionRef.current = createSpeechRecognition(
-      (transcript, isFinal) => {
-        currentTranscriptRef.current = transcript;
-        setInput(transcript);
-        // Auto-send on final result from browser
-        if (isFinal && transcript.trim()) {
-          stopListening();
-          sendMessage(transcript.trim());
-          setInput('');
-          currentTranscriptRef.current = '';
-        }
-      },
-      () => { setIsListening(false); }
-    );
-    recognitionRef.current?.start();
+    isListeningRef.current = true;
     setIsListening(true);
+    startRecognition();
   }
 
   function handlePlayAudio(content: string, index: number) {
@@ -404,11 +427,16 @@ export default function PracticePage() {
 
       {/* Input bar */}
       <div className="px-3 py-3 border-t border-gray-100 bg-white shrink-0">
-        {/* Listening indicator strip */}
-        {isListening && (
+        {/* Listening / error strip */}
+        {isListening && !micError && (
           <div className="flex items-center gap-2 mb-2 px-1">
             <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
             <p className="text-xs text-red-500 font-medium">Ouvindo... fale em inglês</p>
+          </div>
+        )}
+        {micError && (
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <span className="text-xs text-orange-500 font-medium">⚠️ Erro no microfone: {micError}</span>
           </div>
         )}
         <div className="flex items-end gap-2">
