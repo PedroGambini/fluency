@@ -27,12 +27,14 @@ export interface SessionState {
 
   currentSession: {
     scenarioId: string | null;
+    chosenDifficulty: CEFRLevel | null;
     startedAt: number | null;
     messages: { role: 'user' | 'assistant'; content: string }[];
     newWordsThisSession: string[];
     messageCount: number;
     usedPortugueseThisSession: boolean;
     scenariosVisited: string[];
+    sessionEnded: boolean;
   };
 
   levelUpPending: CEFRLevel | null;
@@ -45,21 +47,24 @@ interface StoreActions {
   incrementTime: (seconds: number) => void;
   completeConversation: () => void;
   unlockAchievement: (id: string) => void;
-  setScenario: (scenarioId: string) => void;
+  setScenario: (scenarioId: string, difficulty: CEFRLevel) => void;
   addMessage: (message: { role: 'user' | 'assistant'; content: string }) => void;
   markUsedPortuguese: () => void;
   clearLevelUp: () => void;
+  endSession: () => void;
   resetSession: () => void;
 }
 
 const initialCurrentSession: SessionState['currentSession'] = {
   scenarioId: null,
+  chosenDifficulty: null,
   startedAt: null,
   messages: [],
   newWordsThisSession: [],
   messageCount: 0,
   usedPortugueseThisSession: false,
   scenariosVisited: [],
+  sessionEnded: false,
 };
 
 export const useStore = create<SessionState & StoreActions>((set) => ({
@@ -134,11 +139,12 @@ export const useStore = create<SessionState & StoreActions>((set) => ({
         : [...state.achievements, id],
     })),
 
-  setScenario: (scenarioId) =>
+  setScenario: (scenarioId, difficulty) =>
     set((state) => ({
       currentSession: {
         ...initialCurrentSession,
         scenarioId,
+        chosenDifficulty: difficulty,
         startedAt: Date.now(),
         scenariosVisited: state.currentSession.scenariosVisited.includes(scenarioId)
           ? state.currentSession.scenariosVisited
@@ -161,6 +167,11 @@ export const useStore = create<SessionState & StoreActions>((set) => ({
     })),
 
   clearLevelUp: () => set({ levelUpPending: null }),
+
+  endSession: () =>
+    set((state) => ({
+      currentSession: { ...state.currentSession, sessionEnded: true },
+    })),
 
   resetSession: () =>
     set((state) => ({

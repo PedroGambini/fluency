@@ -3,22 +3,52 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
-import { buildSystemPrompt, parseAIResponse } from '@/lib/prompts';
+import { buildSystemPrompt, buildIntroPrompt, parseAIResponse } from '@/lib/prompts';
 import { SCENARIOS } from '@/lib/scenarios';
-import { isSpeechRecognitionSupported, isSpeechSynthesisSupported, createSpeechRecognition, speak, stopSpeaking } from '@/lib/speech';
+import { CEFRLevel } from '@/lib/levels';
+import {
+  isSpeechRecognitionSupported,
+  isSpeechSynthesisSupported,
+  createSpeechRecognition,
+  speak,
+  stopSpeaking,
+} from '@/lib/speech';
+import {
+  playMessageSent,
+  playMessageReceived,
+  playScenarioStart,
+  playEndSession,
+  playLevelUp,
+  playAchievement,
+} from '@/lib/sounds';
 import ScenarioCard from '@/components/ScenarioCard';
+import ScenarioStartModal from '@/components/ScenarioStartModal';
 import ChatBubble from '@/components/ChatBubble';
 import LevelUpOverlay from '@/components/LevelUpOverlay';
 import SummaryModal from '@/components/SummaryModal';
-import { Mic, MicOff, Send, X, Volume2 } from 'lucide-react';
+import { Mic, MicOff, Send, X } from 'lucide-react';
 
 const MAX_MESSAGES = 30;
 
 export default function PracticePage() {
   const router = useRouter();
   const store = useStore();
-  const { user, currentSession, setScenario, addMessage, addWords, markUsedPortuguese, levelUpPending, clearLevelUp, resetSession } = store;
+  const {
+    user,
+    currentSession,
+    setScenario,
+    addMessage,
+    addWords,
+    markUsedPortuguese,
+    levelUpPending,
+    clearLevelUp,
+    resetSession,
+    endSession,
+    unlockAchievement,
+    achievements,
+  } = store;
 
+  const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -30,25 +60,76 @@ export default function PracticePage() {
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const introSentRef = useRef(false);
 
   const speechSupported = isSpeechRecognitionSupported();
   const ttsSupported = isSpeechSynthesisSupported();
 
+  // Redirect if no user
   useEffect(() => {
-    if (!user) { router.replace('/'); return; }
+    if (!user) router.replace('/');
   }, [user, router]);
+
+  // Fix bug: if session was ended and user navigates back, reset to scenario grid
+  useEffect(() => {
+    if (currentSession.sessionEnded) {
+      resetSession();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Timer
   useEffect(() => {
-    if (!currentSession.scenarioId) return;
+    if (!currentSession.scenarioId || currentSession.sessionEnded) return;
     timerRef.current = setInterval(() => setSessionSeconds((s) => s + 1), 1000);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [currentSession.scenarioId]);
+  }, [currentSession.scenarioId, currentSession.sessionEnded]);
 
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [currentSession.messages, loading]);
+
+  // Level up sound
+  useEffect(() => {
+    if (levelUpPending) playLevelUp();
+  }, [levelUpPending]);
+
+  // Send AI intro when scenario starts
+  const sendIntro = useCallback(async () => {
+    if (!user || introSentRef.current) return;
+    introSentRef.current = true;
+    setLoading(true);
+
+    const introPrompt = buildIntroPrompt(store);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemPrompt: introPrompt,
+          messages: [{ role: 'user', content: 'start' }],
+        }),
+      });
+      const data = await res.json();
+      const { reply } = parseAIResponse(data.text ?? '');
+      addMessage({ role: 'assistant', content: reply });
+      playMessageReceived();
+    } catch {
+      addMessage({ role: 'assistant', content: '(Erro ao conectar. Tente novamente.)' });
+    } finally {
+      setLoading(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, store]);
+
+  useEffect(() => {
+    if (currentSession.scenarioId && currentSession.messages.length === 0) {
+      introSentRef.current = false;
+      sendIntro();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSession.scenarioId]);
 
   function formatTimer(s: number) {
     const m = Math.floor(s / 60);
@@ -63,6 +144,7 @@ export default function PracticePage() {
     addMessage(userMsg);
     setInput('');
     setLoading(true);
+    playMessageSent();
 
     const systemPrompt = buildSystemPrompt(store);
     const messages = [...currentSession.messages, userMsg];
@@ -78,6 +160,7 @@ export default function PracticePage() {
 
       const { reply, meta } = parseAIResponse(data.text);
       addMessage({ role: 'assistant', content: reply });
+      playMessageReceived();
 
       if (meta.newWords?.length > 0) addWords(meta.newWords);
       if (meta.usedPortuguese) markUsedPortuguese();
@@ -88,15 +171,10 @@ export default function PracticePage() {
     }
   }, [user, loading, currentSession, addMessage, addWords, markUsedPortuguese, store]);
 
-  function handleSend() {
-    sendMessage(input);
-  }
+  function handleSend() { sendMessage(input); }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
   function handleMic() {
@@ -130,29 +208,49 @@ export default function PracticePage() {
   function handleEnd() {
     if (timerRef.current) clearInterval(timerRef.current);
     stopSpeaking();
+    endSession();
+    playEndSession();
     setShowSummary(true);
   }
 
   function handleContinue() {
     setShowSummary(false);
     setSessionSeconds(0);
+    introSentRef.current = false;
     resetSession();
   }
 
   function handleSelectScenario(id: string) {
+    setSelectedScenarioId(id);
+  }
+
+  function handleStartScenario(difficulty: CEFRLevel) {
+    if (!selectedScenarioId) return;
+    setSelectedScenarioId(null);
     setSessionSeconds(0);
-    setScenario(id);
+    introSentRef.current = false;
+    setScenario(selectedScenarioId, difficulty);
+    playScenarioStart();
+  }
+
+  function handleAchievementUnlock(id: string) {
+    unlockAchievement(id);
+    playAchievement();
   }
 
   if (!user) return null;
 
   // Scenario selection view
   if (!currentSession.scenarioId) {
+    const pendingScenario = selectedScenarioId
+      ? SCENARIOS.find(s => s.id === selectedScenarioId)
+      : null;
+
     return (
-      <div className="h-full flex flex-col bg-white">
+      <div className="h-full flex flex-col bg-white relative">
         <div className="px-5 pt-6 pb-3">
-          <h2 className="text-xl font-extrabold text-gray-800">Escolha um cenário</h2>
-          <p className="text-sm text-gray-500">Selecione para começar a praticar</p>
+          <h2 className="text-xl font-extrabold text-gray-800">Pratique</h2>
+          <p className="text-sm text-gray-500">Escolha um cenário para começar</p>
         </div>
         <div className="flex-1 overflow-y-auto px-4 pb-4">
           <div className="grid grid-cols-2 gap-3">
@@ -165,50 +263,55 @@ export default function PracticePage() {
             ))}
           </div>
         </div>
+
+        {pendingScenario && (
+          <ScenarioStartModal
+            scenario={pendingScenario}
+            defaultDifficulty={user.level}
+            onStart={handleStartScenario}
+            onClose={() => setSelectedScenarioId(null)}
+          />
+        )}
       </div>
     );
   }
 
-  const scenario = SCENARIOS.find((s) => s.id === currentSession.scenarioId)!;
+  const scenario = SCENARIOS.find(s => s.id === currentSession.scenarioId)!;
   const atLimit = currentSession.messageCount >= MAX_MESSAGES;
 
   return (
     <div className="h-full flex flex-col bg-white relative">
-      {/* Header */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 bg-white shrink-0">
+      {/* Header — always visible */}
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-100 bg-white shrink-0 z-10">
         <span className="text-xl">{scenario.icon}</span>
         <div className="flex-1 min-w-0">
           <p className="font-bold text-gray-800 text-sm truncate">{scenario.name}</p>
-          <p className="text-xs text-gray-400">{formatTimer(sessionSeconds)}</p>
+          <p className="text-xs text-gray-400">
+            {formatTimer(sessionSeconds)} · {currentSession.chosenDifficulty}
+          </p>
         </div>
         <button
           onClick={handleEnd}
-          className="text-xs font-semibold text-red-400 hover:text-red-600 flex items-center gap-1 px-3 py-1.5 rounded-full border border-red-200 hover:border-red-300 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-full bg-red-50 text-red-500 hover:bg-red-100 transition-colors text-xs font-bold shrink-0"
+          aria-label="Encerrar conversa"
         >
-          <X size={12} />
+          <X size={13} />
           Encerrar
         </button>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {currentSession.messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
-            <span className="text-4xl">{scenario.icon}</span>
-            <p className="text-sm font-semibold text-gray-600">{scenario.name}</p>
-            <p className="text-xs text-gray-400 max-w-[200px]">{scenario.mission}</p>
-            <p className="text-xs text-[#58CC02] font-semibold mt-2">Diga olá para começar!</p>
-          </div>
-        )}
-
         {currentSession.messages.map((msg, i) => (
           <ChatBubble
             key={i}
             role={msg.role}
             content={msg.content}
-            onPlayAudio={msg.role === 'assistant' && ttsSupported
-              ? () => handlePlayAudio(msg.content, i)
-              : undefined}
+            onPlayAudio={
+              msg.role === 'assistant' && ttsSupported
+                ? () => handlePlayAudio(msg.content, i)
+                : undefined
+            }
             isPlaying={playingIndex === i}
           />
         ))}
@@ -241,7 +344,7 @@ export default function PracticePage() {
           {speechSupported && (
             <button
               onClick={handleMic}
-              disabled={atLimit}
+              disabled={atLimit || loading}
               className={`p-3 rounded-2xl flex-shrink-0 transition-all ${
                 isListening
                   ? 'bg-red-500 text-white animate-pulse'
@@ -278,7 +381,11 @@ export default function PracticePage() {
         <LevelUpOverlay newLevel={levelUpPending} onDismiss={clearLevelUp} />
       )}
       {showSummary && (
-        <SummaryModal sessionSeconds={sessionSeconds} onContinue={handleContinue} />
+        <SummaryModal
+          sessionSeconds={sessionSeconds}
+          onContinue={handleContinue}
+          onAchievementUnlock={handleAchievementUnlock}
+        />
       )}
     </div>
   );

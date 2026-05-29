@@ -10,6 +10,7 @@ import confetti from 'canvas-confetti';
 interface SummaryModalProps {
   sessionSeconds: number;
   onContinue: () => void;
+  onAchievementUnlock: (id: string) => void;
 }
 
 function formatTime(seconds: number): string {
@@ -18,16 +19,16 @@ function formatTime(seconds: number): string {
   return `${m}m ${s.toString().padStart(2, '0')}s`;
 }
 
-export default function SummaryModal({ sessionSeconds, onContinue }: SummaryModalProps) {
+export default function SummaryModal({ sessionSeconds, onContinue, onAchievementUnlock }: SummaryModalProps) {
   const store = useStore();
-  const { user, vocabulary, achievements, currentSession, unlockAchievement, completeConversation, incrementTime } = store;
+  const { user, vocabulary, achievements, currentSession, completeConversation, incrementTime } = store;
 
   useEffect(() => {
     completeConversation();
     incrementTime(sessionSeconds);
 
     const newlyUnlocked = checkAllAchievements(store, achievements);
-    newlyUnlocked.forEach(unlockAchievement);
+    newlyUnlocked.forEach(onAchievementUnlock);
 
     if (newlyUnlocked.length > 0) {
       confetti({ particleCount: 80, spread: 60, origin: { y: 0.6 } });

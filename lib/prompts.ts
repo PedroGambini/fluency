@@ -1,5 +1,5 @@
 import { SessionState } from './store';
-import { LEVELS } from './levels';
+import { CEFRLevel, LEVELS } from './levels';
 import { getScenarioById } from './scenarios';
 
 export interface AIMeta {
@@ -12,7 +12,9 @@ export interface AIMeta {
 export function buildSystemPrompt(state: SessionState): string {
   if (!state.user) return '';
   const { user } = state;
-  const level = LEVELS[user.level];
+
+  const difficulty: CEFRLevel = state.currentSession.chosenDifficulty ?? user.level;
+  const level = LEVELS[difficulty];
   const scenario = state.currentSession.scenarioId
     ? getScenarioById(state.currentSession.scenarioId)
     : null;
@@ -21,7 +23,7 @@ export function buildSystemPrompt(state: SessionState): string {
 
   return `
 Você é um tutor de inglês conversacional dentro de um app chamado Fluency.
-O aluno se chama ${user.name}. Nível atual: ${user.level}. Objetivo: ${user.goal}.
+O aluno se chama ${user.name}. Nível de dificuldade escolhido: ${difficulty}. Objetivo: ${user.goal}.
 
 # IDIOMA
 - Use aproximadamente ${ptPercent}% de português e ${enPercent}% de inglês.
@@ -42,7 +44,7 @@ ${scenario
 - Mantenha a conversa fluida, calorosa e encorajadora.
 
 # COMPLEXIDADE
-- Adapte vocabulário e estruturas ao nível ${user.level}.
+- Adapte vocabulário e estruturas ao nível ${difficulty}.
 - Faça perguntas que estimulem o aluno a falar mais.
 - Respostas curtas e conversacionais — máximo 3-4 frases.
 
@@ -58,6 +60,40 @@ Responda SEMPRE com este formato exato:
 
 A seção [META] é invisível ao usuário — o app usa para rastrear progresso.
 Em "newWords" liste apenas palavras de conteúdo em inglês usadas corretamente pelo aluno.
+`.trim();
+}
+
+export function buildIntroPrompt(state: SessionState): string {
+  if (!state.user) return '';
+  const { user } = state;
+  const difficulty: CEFRLevel = state.currentSession.chosenDifficulty ?? user.level;
+  const scenario = state.currentSession.scenarioId
+    ? getScenarioById(state.currentSession.scenarioId)
+    : null;
+  const level = LEVELS[difficulty];
+  const ptPercent = Math.round(level.ptRatio * 100);
+  const enPercent = 100 - ptPercent;
+
+  return `
+Você é um tutor de inglês dentro do app Fluency.
+O aluno se chama ${user.name}. Nível de dificuldade: ${difficulty}.
+
+# IDIOMA
+- Use aproximadamente ${ptPercent}% de português e ${enPercent}% de inglês.
+
+# TAREFA
+Faça uma introdução BREVE e CALOROSA ao cenário "${scenario?.name}" e já faça a PRIMEIRA PERGUNTA para engajar o aluno.
+Máximo 2-3 frases. Seja animado e incentivador.
+
+Cenário: ${scenario?.aiRole ?? 'Conversa livre.'}
+
+# FORMATO DA RESPOSTA (OBRIGATÓRIO)
+[RESPOSTA]
+(sua introdução + primeira pergunta aqui)
+[/RESPOSTA]
+[META]
+{"newWords": [], "quality": 0, "usedPortuguese": false, "correctedErrors": []}
+[/META]
 `.trim();
 }
 
