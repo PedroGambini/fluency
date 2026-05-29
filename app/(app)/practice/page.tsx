@@ -104,7 +104,7 @@ export default function PracticePage() {
   const autoSpeak = useCallback((text: string, index: number, onEnd?: () => void) => {
     if (!ttsSupported || mutedRef.current) return;
     setPlayingIndex(index);
-    speak(text, () => { setPlayingIndex(null); onEnd?.(); });
+    void speak(text, () => { setPlayingIndex(null); onEnd?.(); });
   }, [ttsSupported]);
 
   // AI intro when scenario starts
@@ -192,19 +192,15 @@ export default function PracticePage() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   }
 
-  function stopListening(sendTranscript = false) {
+  function stopListening() {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     recognitionRef.current?.stop();
     setIsListening(false);
-    if (sendTranscript && currentTranscriptRef.current.trim()) {
-      sendMessage(currentTranscriptRef.current.trim());
-      setInput('');
-      currentTranscriptRef.current = '';
-    }
   }
 
   async function handleMic() {
-    if (isListening) { stopListening(false); setInput(''); currentTranscriptRef.current = ''; return; }
+    // Toggle off
+    if (isListening) { stopListening(); return; }
     if (!speechSupported) return;
 
     // Request permission if not yet granted
@@ -218,16 +214,22 @@ export default function PracticePage() {
 
     stopSpeaking();
     setPlayingIndex(null);
+    setInput('');
     currentTranscriptRef.current = '';
 
     recognitionRef.current = createSpeechRecognition(
-      (transcript) => {
+      (transcript, isFinal) => {
         currentTranscriptRef.current = transcript;
         setInput(transcript);
-        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = setTimeout(() => stopListening(true), 4000);
+        // Auto-send on final result from browser
+        if (isFinal && transcript.trim()) {
+          stopListening();
+          sendMessage(transcript.trim());
+          setInput('');
+          currentTranscriptRef.current = '';
+        }
       },
-      () => { setIsListening(false); if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current); }
+      () => { setIsListening(false); }
     );
     recognitionRef.current?.start();
     setIsListening(true);
@@ -236,7 +238,7 @@ export default function PracticePage() {
   function handlePlayAudio(content: string, index: number) {
     if (playingIndex === index) { stopSpeaking(); setPlayingIndex(null); return; }
     setPlayingIndex(index);
-    speak(content, () => setPlayingIndex(null));
+    void speak(content, () => setPlayingIndex(null));
   }
 
   function handleMuteToggle() {
@@ -395,43 +397,32 @@ export default function PracticePage() {
         <div className="mx-3 mb-1 px-4 py-2 bg-red-50 rounded-2xl flex items-center gap-2">
           <span className="text-sm">🚫</span>
           <p className="text-xs text-red-600 font-medium">
-            Microfone bloqueado. Ative nas configurações do navegador para usar a voz.
+            Microfone bloqueado. Ative nas configurações do navegador.
           </p>
-        </div>
-      )}
-
-      {/* Listening overlay */}
-      {isListening && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 z-20">
-          <div className="bg-white rounded-3xl px-10 py-8 flex flex-col items-center gap-4 shadow-2xl mx-6">
-            <div className="relative flex items-center justify-center">
-              <div className="absolute w-24 h-24 rounded-full bg-red-100 animate-ping opacity-60" />
-              <div className="w-20 h-20 rounded-full bg-red-500 flex items-center justify-center shadow-lg">
-                <Mic size={36} className="text-white" />
-              </div>
-            </div>
-            <p className="text-gray-800 font-bold text-base">Estou te ouvindo...</p>
-            {input && <p className="text-gray-500 text-sm text-center italic">&ldquo;{input}&rdquo;</p>}
-            <p className="text-gray-400 text-xs text-center">Fale em inglês · Para após 4s de silêncio</p>
-            <button
-              onClick={() => stopListening(false)}
-              className="px-5 py-2 rounded-full bg-gray-100 text-gray-500 text-sm hover:bg-gray-200 transition-colors"
-            >
-              Cancelar
-            </button>
-          </div>
         </div>
       )}
 
       {/* Input bar */}
       <div className="px-3 py-3 border-t border-gray-100 bg-white shrink-0">
+        {/* Listening indicator strip */}
+        {isListening && (
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <p className="text-xs text-red-500 font-medium">Ouvindo... fale em inglês</p>
+          </div>
+        )}
         <div className="flex items-end gap-2">
           {speechSupported && micPermission !== 'denied' && (
             <button
               onClick={handleMic}
               disabled={atLimit || loading}
-              className="p-3 rounded-2xl flex-shrink-0 bg-gray-100 text-gray-500 hover:bg-gray-200 disabled:opacity-40 transition-all"
-              aria-label="Gravar voz"
+              className={`p-3 rounded-2xl flex-shrink-0 transition-all disabled:opacity-40 ${
+                isListening
+                  ? 'bg-red-500 text-white shadow-lg shadow-red-200'
+                  : 'bg-gray-100 text-gray-400 hover:bg-gray-200'
+              }`}
+              aria-label={isListening ? 'Parar microfone' : 'Ligar microfone'}
+              title={isListening ? 'Clique para parar' : 'Clique para falar'}
             >
               <Mic size={18} />
             </button>
